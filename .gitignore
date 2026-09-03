@@ -1,0 +1,21 @@
+# Terraform state files & variables (contains sensitive data/secrets)
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
+# Local Terraform runtime directory (contains downloaded provider binaries)
+.terraform/
+
+# Crash logs
+crash.log
+crash.*.log
+
+# OS & Editor metadata
+.DS_Store
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
