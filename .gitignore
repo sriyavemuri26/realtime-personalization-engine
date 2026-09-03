@@ -19,3 +19,12 @@ crash.*.log
 # Environment files
 .env
 .env.*
+
+# Generated zips and installers
+*.zip
+*.pkg
+lambda/*.zip
+
+# OS/VS Code artifacts
+.vscode/
+*.loggit st
