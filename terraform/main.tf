@@ -269,6 +269,11 @@ resource "aws_iam_role_policy" "processor_lambda_policy" {
         Effect   = "Allow"
         Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
         Resource = aws_sqs_queue.ingestion_queue.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.data_lake.arn}/*"
       }
     ]
   })
@@ -293,6 +298,7 @@ resource "aws_lambda_function" "processor_lambda" {
   environment {
     variables = {
       USER_PROFILES_TABLE = aws_dynamodb_table.user_profiles.name
+      DATA_LAKE_BUCKET    = aws_s3_bucket.data_lake.id
     }
   }
 
