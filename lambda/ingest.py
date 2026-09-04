@@ -7,7 +7,8 @@ sqs = boto3.client('sqs')
 QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
 
 REQUIRED_FIELDS = {'user_id', 'item_id', 'event_type'}
-VALID_EVENTS = {'like', 'skip', 'click', 'impression'}
+VALID_EVENTS = {'like', 'hate', 'click', 'impression', 'share', 'long_view', 'comment'}
+
 
 def lambda_handler(event, context):
     try:

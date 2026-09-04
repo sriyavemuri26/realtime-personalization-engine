@@ -28,3 +28,8 @@ lambda/*.zip
 # OS/VS Code artifacts
 .vscode/
 *.loggit st
+data/
+*.csv
+
+data/
+*.csv
