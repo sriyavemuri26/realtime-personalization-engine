@@ -37,22 +37,26 @@ def lambda_handler(event, context):
                         last_interacted_item = :item
                     ADD total_interactions :inc,
                         total_watch_time_ms :watch,
-                        likes_count :like,
-                        skips_count :skip,
+                        impressions_count :imp,
                         clicks_count :click,
+                        long_views_count :long_view,
+                        likes_count :like,
+                        comments_count :comment,
                         shares_count :share,
-                        impressions_count :imp
+                        hates_count :hate
                 """,
                 ExpressionAttributeValues={
                     ':ts': timestamp,
                     ':item': item_id,
                     ':inc': 1,
                     ':watch': play_time,
-                    ':like': 1 if event_type == 'like' else 0,
-                    ':skip': 1 if event_type == 'skip' else 0,
+                    ':imp': 1 if event_type == 'impression' else 0,
                     ':click': 1 if event_type == 'click' else 0,
+                    ':long_view': 1 if event_type == 'long_view' else 0,
+                    ':like': 1 if event_type == 'like' else 0,
+                    ':comment': 1 if event_type == 'comment' else 0,
                     ':share': 1 if event_type == 'share' else 0,
-                    ':imp': 1 if event_type == 'impression' else 0
+                    ':hate': 1 if event_type == 'hate' else 0
                 }
             )
 
