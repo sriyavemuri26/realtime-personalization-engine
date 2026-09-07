@@ -35,3 +35,9 @@ resource "aws_apigatewayv2_route" "events_route" {
   route_key = "POST /v1/events"
   target    = "integrations/${aws_apigatewayv2_integration.ingest_integration.id}"
 }
+
+resource "aws_apigatewayv2_route" "analytics_route" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "GET /analytics"
+  target    = "integrations/${aws_apigatewayv2_integration.serving_integration.id}"
+}
