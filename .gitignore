@@ -33,3 +33,5 @@ data/
 
 data/
 *.csv
+
+node_modules/
