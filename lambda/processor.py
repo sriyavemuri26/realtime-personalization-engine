@@ -34,7 +34,8 @@ def lambda_handler(event, context):
                 Key={'user_id': user_id},
                 UpdateExpression="""
                     SET last_active = :ts,
-                        last_interacted_item = :item
+                        last_interacted_item = :item,
+                        last_interacted_event = :event
                     ADD total_interactions :inc,
                         total_watch_time_ms :watch,
                         impressions_count :imp,
@@ -48,6 +49,7 @@ def lambda_handler(event, context):
                 ExpressionAttributeValues={
                     ':ts': timestamp,
                     ':item': item_id,
+                    ':event': event_type,
                     ':inc': 1,
                     ':watch': play_time,
                     ':imp': 1 if event_type == 'impression' else 0,

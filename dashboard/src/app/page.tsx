@@ -25,10 +25,126 @@ import {
   CartesianGrid,
 } from 'recharts';
 
-// ---------- Types ----------
+// ---------- Types & Configuration ----------
+
+const CATEGORIES = [
+  'Drama',
+  'Gaming',
+  'Anime',
+  'Movies',
+  'Comedy',
+  'Cooking',
+  'Aesthetic',
+  'Singing',
+  'Battle',
+  'Cosplay',
+] as const;
+
+export type MediaItem = {
+  id: string;
+  index: number;
+  category: string;
+  title: string;
+  gifPath: string;
+  video_path: string;
+  score?: number;
+  affinity_score?: number;
+  ucb_bonus?: number;
+};
+
+// Fixed relative media paths targeting 30 isolated public media files
+const BASE_MEDIA: MediaItem[] = Array.from({ length: 30 }, (_, i) => {
+  const category = CATEGORIES[i % 10];
+  const instanceNum = Math.floor(i / 10) + 1;
+  return {
+    id: `item_${i}.gif`,
+    index: i,
+    category,
+    title: `${category} Clip #${instanceNum}`,
+    gifPath: `/media/item_${i}.gif`,
+    video_path: `/public/media/item_${i}.gif`,
+  };
+});
+
+function getCategoryForItemId(itemId?: string) {
+  if (!itemId || itemId === 'None') return null;
+  const match = itemId.match(/item_(\d+)/);
+  if (match) {
+    const idx = parseInt(match[1], 10);
+    if (idx >= 0 && idx < 30) {
+      return CATEGORIES[idx % 10];
+    }
+  }
+  return null;
+}
+
+function rankMediaItems(userFeats: UserFeatures, candidates: MediaItem[] = BASE_MEDIA): MediaItem[] {
+  const lastInteracted = userFeats.last_interacted_item || 'None';
+  const lastEvent = (userFeats.last_interacted_event || '').toLowerCase();
+  const lastCategory = userFeats.last_interacted_category || getCategoryForItemId(lastInteracted);
+  const totalImpressions = Math.max(userFeats.impressions_count || 0, 1);
+  const likes = userFeats.likes_count || 0;
+  const clicks = userFeats.clicks_count || 0;
+  const shares = userFeats.shares_count || 0;
+  const comments = userFeats.comments_count || 0;
+  const hates = userFeats.hates_count || 0;
+  const isHateEvent = lastEvent === 'hate';
+  const cParam = 0.5;
+
+  return [...candidates]
+    .map((cand) => {
+      let affinityScore = 0;
+      if (lastCategory) {
+        if (isHateEvent) {
+          if (cand.category === lastCategory) {
+            // Heavily penalize hated category
+            affinityScore = -10.0 - 2.0 * Math.max(hates, 1);
+          } else {
+            // Boost untried/different categories to immediately recommend alternatives
+            affinityScore = 1.5 + 0.1 * likes + 0.05 * clicks;
+          }
+        } else {
+          if (cand.category === lastCategory) {
+            affinityScore = 2.0 + 0.2 * likes + 0.1 * clicks + 0.3 * shares + 0.15 * comments;
+            if (hates > 0) affinityScore -= 0.5 * hates;
+          } else {
+            affinityScore = 0;
+          }
+        }
+      }
+      const ni = lastInteracted.includes(cand.id) ? 1 : 0;
+      const ucbBonus = cParam * Math.sqrt(Math.log(totalImpressions + 1) / (ni + 1));
+      const totalScore = parseFloat((affinityScore + ucbBonus).toFixed(4));
+      return {
+        ...cand,
+        score: totalScore,
+        affinity_score: parseFloat(affinityScore.toFixed(4)),
+        ucb_bonus: parseFloat(ucbBonus.toFixed(4)),
+      };
+    })
+    .sort((a, b) => (b.score || 0) - (a.score || 0) || a.index - b.index);
+}
+
+function queueUpcomingRecommendations(
+  currentFeed: MediaItem[],
+  currIdx: number,
+  rankedCandidates: MediaItem[]
+): MediaItem[] {
+  // History up to and including active item must remain completely untouched to avoid unmounting active video
+  const viewedHistory = currentFeed.slice(0, currIdx + 1);
+  const viewedIds = new Set(viewedHistory.map((item) => item.id));
+
+  // Queue highest ranked unviewed candidates right after currIdx
+  const unviewedRanked = rankedCandidates.filter((item) => !viewedIds.has(item.id));
+  const alreadyViewedRanked = rankedCandidates.filter((item) => viewedIds.has(item.id));
+
+  return [...viewedHistory, ...unviewedRanked, ...alreadyViewedRanked];
+}
 
 type UserFeatures = {
   last_interacted_item?: string;
+  last_interacted_event?: string;
+  last_interacted_category?: string;
   total_watch_time_ms?: number;
   impressions_count?: number;
   clicks_count?: number;
@@ -43,14 +159,9 @@ type FeedResponse = {
   user_id: string;
   features?: UserFeatures;
   events?: UserFeatures;
+  ranked_videos?: string[];
+  recommendations?: MediaItem[];
 } & UserFeatures;
-
-// Fixed relative media paths targeting 30 public media files
-const BASE_MEDIA = Array.from({ length: 30 }, (_, i) => ({
-  id: `item_${i}.gif`,
-  title: `Cat Media Clip #${i + 1}`,
-  gifPath: `/media/item_${i}.gif`,
-}));
 
 const PIPELINE_STAGES = ['Event', 'Queue', 'Feature Store', 'Model', 'Serve'] as const;
 type PipelineStage = (typeof PIPELINE_STAGES)[number];
@@ -133,7 +244,7 @@ function PipelineStrip({ activeStage }: { activeStage: PipelineStage | null }) {
 export default function PersonalizationDashboard() {
   const [activeTab, setActiveTab] = useState<'demo' | 'behind'>('demo');
   const [selectedUserRaw, setSelectedUserRaw] = useState('7');
-  const [mediaFeed, setMediaFeed] = useState(BASE_MEDIA);
+  const [mediaFeed, setMediaFeed] = useState<MediaItem[]>(BASE_MEDIA);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [data, setData] = useState<FeedResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -150,7 +261,6 @@ export default function PersonalizationDashboard() {
   );
   const [pipelineActiveStage, setPipelineActiveStage] = useState<PipelineStage | null>(null);
 
-  // Frontend-side feature overlay to mimic backend dynamic updates instantaneously
   const [localFeatures, setLocalFeatures] = useState<UserFeatures>({
     impressions_count: 0,
     clicks_count: 0,
@@ -161,15 +271,24 @@ export default function PersonalizationDashboard() {
     hates_count: 0,
     total_watch_time_ms: 0,
     last_interacted_item: 'None',
+    last_interacted_event: 'impression',
+    last_interacted_category: 'None',
   });
+
+  const localFeaturesRef = useRef(localFeatures);
+  localFeaturesRef.current = localFeatures;
 
   const watchStartRef = useRef<number>(Date.now());
   const pipelineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentItem = mediaFeed[currentIndex];
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
+
+  const currentItem = mediaFeed[currentIndex] || mediaFeed[0] || BASE_MEDIA[0];
+  const nextItem = mediaFeed[currentIndex + 1];
 
   const getFormattedUserId = (val: string) => (val.startsWith('usr_') ? val : `usr_${val.padStart(6, '0')}`);
 
-  const fetchUserProfile = async (rawUserId: string) => {
+  const fetchUserProfile = async (rawUserId: string, resetQueue = false) => {
     setLoading(true);
     const formattedUserId = getFormattedUserId(rawUserId);
     try {
@@ -184,7 +303,7 @@ export default function PersonalizationDashboard() {
       const res = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
 
       if (res.status === 404) {
-        const defaultFeats = {
+        const defaultFeats: UserFeatures = {
           impressions_count: 0,
           clicks_count: 0,
           long_views_count: 0,
@@ -194,26 +313,62 @@ export default function PersonalizationDashboard() {
           hates_count: 0,
           total_watch_time_ms: 0,
           last_interacted_item: 'None',
+          last_interacted_event: 'impression',
+          last_interacted_category: 'None',
         };
         setData({ user_id: formattedUserId, features: defaultFeats });
         setLocalFeatures(defaultFeats);
+        localFeaturesRef.current = defaultFeats;
+        const ranked = rankMediaItems(defaultFeats);
+        if (resetQueue) {
+          setMediaFeed(ranked);
+          setCurrentIndex(0);
+        } else {
+          setMediaFeed((prev) => queueUpcomingRecommendations(prev, currentIndexRef.current, ranked));
+        }
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const payload = await res.json();
+      const payload: FeedResponse = await res.json();
       setData(payload);
       const fetched = payload.events || payload.features || payload || {};
-      setLocalFeatures({
-        impressions_count: fetched.impressions_count ?? 0,
-        clicks_count: fetched.clicks_count ?? 0,
-        long_views_count: fetched.long_views_count ?? 0,
-        likes_count: fetched.likes_count ?? 0,
-        comments_count: fetched.comments_count ?? 0,
-        shares_count: fetched.shares_count ?? 0,
-        hates_count: fetched.hates_count ?? 0,
-        total_watch_time_ms: fetched.total_watch_time_ms ?? 0,
-        last_interacted_item: fetched.last_interacted_item || 'None',
-      });
+
+      // Guard against stale DynamoDB read overwriting fresh local interactions (e.g. hate events)
+      const currentLocal = localFeaturesRef.current;
+      const updatedFeats: UserFeatures = {
+        impressions_count: Math.max(fetched.impressions_count ?? 0, currentLocal.impressions_count ?? 0),
+        clicks_count: Math.max(fetched.clicks_count ?? 0, currentLocal.clicks_count ?? 0),
+        long_views_count: Math.max(fetched.long_views_count ?? 0, currentLocal.long_views_count ?? 0),
+        likes_count: Math.max(fetched.likes_count ?? 0, currentLocal.likes_count ?? 0),
+        comments_count: Math.max(fetched.comments_count ?? 0, currentLocal.comments_count ?? 0),
+        shares_count: Math.max(fetched.shares_count ?? 0, currentLocal.shares_count ?? 0),
+        hates_count: Math.max(fetched.hates_count ?? 0, currentLocal.hates_count ?? 0),
+        total_watch_time_ms: Math.max(fetched.total_watch_time_ms ?? 0, currentLocal.total_watch_time_ms ?? 0),
+        last_interacted_item:
+          currentLocal.last_interacted_item && currentLocal.last_interacted_item !== 'None'
+            ? currentLocal.last_interacted_item
+            : (fetched.last_interacted_item || 'None'),
+        last_interacted_event:
+          currentLocal.last_interacted_event && currentLocal.last_interacted_event !== 'impression'
+            ? currentLocal.last_interacted_event
+            : (fetched.last_interacted_event || 'impression'),
+        last_interacted_category:
+          currentLocal.last_interacted_category && currentLocal.last_interacted_category !== 'None'
+            ? currentLocal.last_interacted_category
+            : (fetched.last_interacted_category || getCategoryForItemId(fetched.last_interacted_item) || 'None'),
+      };
+      setLocalFeatures(updatedFeats);
+      localFeaturesRef.current = updatedFeats;
+
+      // Always re-rank using the latest consolidated user features to ensure dislike/hate penalties are preserved
+      const ranked = rankMediaItems(updatedFeats, BASE_MEDIA);
+
+      if (resetQueue) {
+        setMediaFeed(ranked);
+        setCurrentIndex(0);
+      } else {
+        setMediaFeed((prev) => queueUpcomingRecommendations(prev, currentIndexRef.current, ranked));
+      }
     } catch (err) {
       console.error('Failed to fetch user profile:', err);
     } finally {
@@ -240,8 +395,14 @@ export default function PersonalizationDashboard() {
 
   // Local feature tracker mapping KuaiRand interactions
   const updateLocalFeature = (eventType: string, itemId: string, extraMs = 0) => {
+    const itemCat = getCategoryForItemId(itemId) || 'None';
     setLocalFeatures((prev) => {
-      const updated = { ...prev, last_interacted_item: itemId };
+      const updated: UserFeatures = {
+        ...prev,
+        last_interacted_item: itemId,
+        last_interacted_event: eventType,
+        last_interacted_category: itemCat,
+      };
       if (eventType === 'impression') updated.impressions_count = (prev.impressions_count || 0) + 1;
       if (eventType === 'click') updated.clicks_count = (prev.clicks_count || 0) + 1;
       if (eventType === 'long_view') updated.long_views_count = (prev.long_views_count || 0) + 1;
@@ -250,33 +411,57 @@ export default function PersonalizationDashboard() {
       if (eventType === 'share') updated.shares_count = (prev.shares_count || 0) + 1;
       if (eventType === 'hate') updated.hates_count = (prev.hates_count || 0) + 1;
       if (extraMs > 0) updated.total_watch_time_ms = (prev.total_watch_time_ms || 0) + extraMs;
+      localFeaturesRef.current = updated;
       return updated;
     });
   };
 
   const revertLocalFeature = (eventType: string, extraMs = 0) => {
-  setLocalFeatures((prev) => {
-    const reverted = { ...prev };
-    if (eventType === 'impression') reverted.impressions_count = Math.max(0, (prev.impressions_count || 0) - 1);
-    if (eventType === 'click') reverted.clicks_count = Math.max(0, (prev.clicks_count || 0) - 1);
-    if (eventType === 'long_view') reverted.long_views_count = Math.max(0, (prev.long_views_count || 0) - 1);
-    if (eventType === 'like') reverted.likes_count = Math.max(0, (prev.likes_count || 0) - 1);
-    if (eventType === 'comment') reverted.comments_count = Math.max(0, (prev.comments_count || 0) - 1);
-    if (eventType === 'share') reverted.shares_count = Math.max(0, (prev.shares_count || 0) - 1);
-    if (eventType === 'hate') reverted.hates_count = Math.max(0, (prev.hates_count || 0) - 1);
-    if (extraMs > 0) reverted.total_watch_time_ms = Math.max(0, (prev.total_watch_time_ms || 0) - extraMs);
-    return reverted;
-  });
-};
+    setLocalFeatures((prev) => {
+      const reverted = { ...prev };
+      if (eventType === 'impression') reverted.impressions_count = Math.max(0, (prev.impressions_count || 0) - 1);
+      if (eventType === 'click') reverted.clicks_count = Math.max(0, (prev.clicks_count || 0) - 1);
+      if (eventType === 'long_view') reverted.long_views_count = Math.max(0, (prev.long_views_count || 0) - 1);
+      if (eventType === 'like') reverted.likes_count = Math.max(0, (prev.likes_count || 0) - 1);
+      if (eventType === 'comment') reverted.comments_count = Math.max(0, (prev.comments_count || 0) - 1);
+      if (eventType === 'share') reverted.shares_count = Math.max(0, (prev.shares_count || 0) - 1);
+      if (eventType === 'hate') reverted.hates_count = Math.max(0, (prev.hates_count || 0) - 1);
+      if (extraMs > 0) reverted.total_watch_time_ms = Math.max(0, (prev.total_watch_time_ms || 0) - extraMs);
+      localFeaturesRef.current = reverted;
+      return reverted;
+    });
+  };
 
   const handleInteraction = async (eventType: string, itemId: string = currentItem.id, extraMs = 0) => {
     const formattedUserId = getFormattedUserId(selectedUserRaw);
     const endpoint =
       process.env.NEXT_PUBLIC_EVENTS_ENDPOINT || 'https://h0pe9irg1f.execute-api.us-east-2.amazonaws.com/v1/events';
 
-    // Immediately reflect metrics on the frontend
+    // 1. Immediately reflect metrics on the frontend
     updateLocalFeature(eventType, itemId, extraMs);
     triggerPipelinePulse('Feature Store');
+
+    // 2. Pre-load the top recommendations starting at [currentIndex + 1] without modifying active video [currentIndex]
+    setMediaFeed((prev) => {
+      const itemCat = getCategoryForItemId(itemId) || 'None';
+      const currentLocal = localFeaturesRef.current;
+      const updatedFeats: UserFeatures = {
+        ...currentLocal,
+        last_interacted_item: itemId,
+        last_interacted_event: eventType,
+        last_interacted_category: itemCat,
+      };
+      if (eventType === 'like') updatedFeats.likes_count = (currentLocal.likes_count || 0) + 1;
+      if (eventType === 'click') updatedFeats.clicks_count = (currentLocal.clicks_count || 0) + 1;
+      if (eventType === 'share') updatedFeats.shares_count = (currentLocal.shares_count || 0) + 1;
+      if (eventType === 'comment') updatedFeats.comments_count = (currentLocal.comments_count || 0) + 1;
+      if (eventType === 'hate') updatedFeats.hates_count = (currentLocal.hates_count || 0) + 1;
+      if (eventType === 'impression') updatedFeats.impressions_count = (currentLocal.impressions_count || 0) + 1;
+
+      localFeaturesRef.current = updatedFeats;
+      const newlyRanked = rankMediaItems(updatedFeats, BASE_MEDIA);
+      return queueUpcomingRecommendations(prev, currentIndexRef.current, newlyRanked);
+    });
 
     try {
       const res = await fetch(endpoint, {
@@ -291,6 +476,11 @@ export default function PersonalizationDashboard() {
       });
       setLastEvent({ type: eventType, item: itemId, status: res.status, error: !res.ok });
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
+      // 3. Sync backend recommendations into the upcoming queue in the background
+      setTimeout(() => {
+        fetchUserProfile(selectedUserRaw, false);
+      }, 350);
     } catch (err) {
       console.error('Failed to dispatch event:', err);
       revertLocalFeature(eventType, extraMs);
@@ -299,11 +489,12 @@ export default function PersonalizationDashboard() {
 
   const navigateFeed = async (direction: 'next' | 'prev') => {
     const elapsedMs = Date.now() - watchStartRef.current;
-    
-    // Process local and backend tracking sequentially
-    await handleInteraction('impression', currentItem.id, elapsedMs);
+
+    // Process local and backend tracking sequentially for the video being exited
+    const activeItem = currentItem;
+    await handleInteraction('impression', activeItem.id, elapsedMs);
     if (elapsedMs > 5000) {
-      await handleInteraction('long_view', currentItem.id);
+      await handleInteraction('long_view', activeItem.id);
     }
 
     setImgError(false);
@@ -316,7 +507,7 @@ export default function PersonalizationDashboard() {
   };
 
   useEffect(() => {
-    fetchUserProfile(selectedUserRaw);
+    fetchUserProfile(selectedUserRaw, true);
     watchStartRef.current = Date.now();
 
     const opsInterval = setInterval(() => {
@@ -421,12 +612,24 @@ export default function PersonalizationDashboard() {
 
                   {/* Top Feed Meta */}
                   <div className="relative z-10 p-5 flex justify-between items-center">
-                    <span className="text-[11px] font-mono text-cyan-400 bg-black/60 border border-white/10 px-2.5 py-1 rounded-full">
-                      {currentItem.id}
-                    </span>
-                    <span className="text-[11px] font-mono text-zinc-300 bg-black/40 border border-white/10 px-2.5 py-1 rounded-md">
-                      {currentIndex + 1} / {mediaFeed.length}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-mono font-medium text-cyan-400 bg-black/70 border border-cyan-500/30 px-2.5 py-1 rounded-full shadow-sm">
+                        {currentItem.id}
+                      </span>
+                      <span className="text-[11px] font-medium text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded-full">
+                        {currentItem.category}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {currentItem.score !== undefined && (
+                        <span className="text-[10px] font-mono text-zinc-300 bg-black/60 border border-white/10 px-2 py-0.5 rounded">
+                          Score: {currentItem.score.toFixed(2)}
+                        </span>
+                      )}
+                      <span className="text-[11px] font-mono text-zinc-300 bg-black/40 border border-white/10 px-2.5 py-1 rounded-md">
+                        {currentIndex + 1} / {mediaFeed.length}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Feed Controls */}
@@ -482,7 +685,25 @@ export default function PersonalizationDashboard() {
                   </div>
 
                   {/* Reel Bottom Caption */}
-                  <div className="relative z-10 p-5">
+                  <div className="relative z-10 p-5 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold text-cyan-400 uppercase tracking-wider">
+                          {currentItem.category}
+                        </span>
+                        {currentItem.affinity_score !== undefined && currentItem.affinity_score > 0 && (
+                          <span className="text-[10px] font-mono bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 px-1.5 py-0.5 rounded">
+                            Affinity Match
+                          </span>
+                        )}
+                      </div>
+                      {nextItem && (
+                        <span className="text-[10px] font-mono text-zinc-400 bg-black/60 border border-white/10 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <span className="text-zinc-500">Queued Next:</span>
+                          <span className="text-cyan-300 font-medium">{nextItem.category}</span> ({nextItem.id})
+                        </span>
+                      )}
+                    </div>
                     <h3 className="text-base font-semibold text-white tracking-wide">
                       {currentItem.title}
                     </h3>

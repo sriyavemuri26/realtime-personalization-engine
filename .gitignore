@@ -35,3 +35,5 @@ data/
 *.csv
 
 node_modules/
+__pycache__/
+*.py[cod]
