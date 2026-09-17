@@ -90,10 +90,10 @@ flowchart TD
     class KA storage;
     class ORT ui;
 
-    %% Subgraph Fills
-    style OFFLINE fill:#fff1f2,stroke:#fb7185,stroke-width:2px;
-    style SEEDING fill:#f0f9ff,stroke:#38bdf8,stroke-width:2px;
-    style SERVING fill:#eef2ff,stroke:#6366f1,stroke-width:2px;
+    %% Subgraph Fills & Dark Text Styling
+    style OFFLINE fill:#fff1f2,stroke:#fb7185,stroke-width:2px,color:#0f172a;
+    style SEEDING fill:#f0f9ff,stroke:#38bdf8,stroke-width:2px,color:#0f172a;
+    style SERVING fill:#eef2ff,stroke:#6366f1,stroke-width:2px,color:#0f172a;
 ```
 
 ---
