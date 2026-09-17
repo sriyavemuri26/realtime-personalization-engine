@@ -32,84 +32,66 @@ A serverless, event-driven video recommendation system with a live UCB1 multi-ar
 
 ### Live Demo (real-time UCB1 pipeline)
 
-```mermaid
-flowchart TD
-    A["Next.js Dashboard<br/>(Live Demo tab)"] -->|"GET /feed"| GW[API Gateway]
+```flowchart TD
+    A["Next.js Dashboard<br/>(Live Demo Tab)"] -->|"GET /feed"| GW["AWS API Gateway<br/><code>*.execute-api.us-east-2.amazonaws.com</code>"]
     A -->|"POST /v1/events"| GW
 
     GW --> S[Serving Lambda]
     GW --> I[Ingest Lambda]
 
-    S <-->|"read profile / return ranked feed"| UP[("DynamoDB<br/>user_profiles")]
+    S -->|"1. Read Profile State"| UP[("DynamoDB<br/>user_profiles")]
+    S -->|"2. Return Ranked Feed"| A
 
-    I -->|"enqueue validated event"| Q[("SQS<br/>user-interactions-queue")]
-    Q -->|"batch of 10"| P[Processor Lambda]
-    P -->|"ADD interaction counters"| UP
-    P -->|"archive raw batch"| S3[("S3 Data Lake<br/>raw-events/year/month/day")]
-
-    S -->|"ranked recommendations"| A
-```
-
-### Offline Model Replay (KuaiRand benchmark)
-
-```mermaid
-flowchart TD
-    subgraph UI["Frontend Application (Vercel)"]
-        direction LR
-        LDT["Live Demo Tab<br/><i>(UCB1 Exploration & Real-Time Scoring)</i>"]
-        ORT["Offline Replay Tab<br/><i>(EMA Preference Shift Analytics)</i>"]
-    end
-
-    GW["AWS API Gateway<br/><code>https://recommender.sriyavemuri.com</code>"]
-    
-    LDT -->|"1. User Action<br/>(POST /v1/events)"| GW
-    LDT -->|"2. Fetch Ranked Recommendations<br/>(GET /feed)"| GW
-    ORT -->|"3. Stream Historical Telemetry<br/>(GET /analytics)"| GW
-
-    subgraph AWS["Real-Time Event-Driven Pipeline"]
-        ING["Ingest Lambda<br/><i>(Payload Validation & Enqueue)</i>"]
-        SERV["Serving Lambda<br/><i>(UCB1 Ranking & Analytics Engine)</i>"]
-        SQS["Amazon SQS Queue<br/><i>(Asynchronous Interaction Buffer)</i>"]
-        PROC["Processor Lambda<br/><i>(Batch Processing & Atomic Writes)</i>"]
-        
-        GW --> ING
-        GW --> SERV
-        ING --> SQS
-        SQS -->|"Micro-Batches (Size: 10)"| PROC
-    end
-
-    subgraph STORAGE["Persistence & Analytical Data Lake"]
-        DDB[("Amazon DynamoDB<br/>• user_profiles (Real-Time State)<br/>• kuairand_analytics (Replay Store)")]
-        S3[("Amazon S3 Data Lake<br/><code>raw-events/year=/month=/day/</code>")]
-    end
-
-    PROC -->|"4. Atomic Counter Increments"| DDB
-    PROC -->|"5. Archive Raw Event Streams"| S3
-    SERV -->|"Read Active State & Benchmarks"| DDB
-
-    subgraph OFFLINE["Offline KuaiRand Benchmark Pipeline"]
-        CSV["KuaiRand-Pure Dataset<br/><i>(1M+ Short-Video Logs)</i>"] --> SIM["simulate_kuairand_stream.py<br/><i>(EMA Probability Shift Engine)</i>"]
-        SIM --> JSON["data/kuairand_analytics_telemetry.json<br/><i>(Pre-Computed Replay Traces)</i>"]
-        JSON --> SEED["seed.py<br/><i>(DynamoDB Bulk Loader)</i>"]
-        SEED -->|"Initial State Seed"| DDB
-    end
+    I -->|"Enqueue Validated Event"| Q[("SQS Queue<br/>user-interactions")]
+    Q -->|"Micro-Batches (Size: 10)"| P[Processor Lambda]
+    P -->|"Atomic Counter Increments"| UP
+    P -->|"Archive Raw Event Batch"| S3[("S3 Data Lake<br/>raw-events/year=/month=/day/")]
 
     %% Node Fills & Text Colors
     classDef ui fill:#4f46e5,stroke:#312e81,stroke-width:2px,color:#ffffff;
     classDef aws fill:#0284c7,stroke:#075985,stroke-width:2px,color:#ffffff;
     classDef storage fill:#059669,stroke:#065f46,stroke-width:2px,color:#ffffff;
-    classDef offline fill:#e11d48,stroke:#9f1239,stroke-width:2px,color:#ffffff;
 
-    class ING,SERV,SQS,PROC,GW aws;
-    class LDT,ORT ui;
-    class DDB,S3 storage;
-    class CSV,SIM,JSON,SEED offline;
+    class A ui;
+    class GW,S,I,P aws;
+    class UP,Q,S3 storage;
+```
+
+### Offline Model Replay (KuaiRand benchmark)
+
+```mermaidflowchart TD
+    subgraph OFFLINE["1. Local Pre-Processing & Feature Engineering"]
+        CSV["KuaiRand-Pure Dataset<br/><i>(1M+ Short-Video Interaction Logs)</i>"] --> SIM["simulate_kuairand_stream.py<br/><i>(EMA Probability Shift Engine)</i>"]
+        SIM --> JSON["data/kuairand_analytics_telemetry.json<br/><i>(Pre-Computed Replay Traces)</i>"]
+    end
+
+    subgraph SEEDING["2. Infrastructure Ingestion"]
+        JSON --> SEED["seed.py<br/><i>(DynamoDB Bulk Loader)</i>"]
+        SEED -->|"Batch Write Items"| KA[("DynamoDB<br/>kuairand_analytics")]
+    end
+
+    subgraph SERVING["3. Analytics Dashboard Serving"]
+        ORT["Next.js Dashboard<br/><i>(Offline Replay Tab)</i>"] -->|"GET /analytics"| GW["AWS API Gateway<br/><code>*.execute-api.us-east-2.amazonaws.com</code>"]
+        GW --> SERV["Serving Lambda<br/><i>(/analytics Handler)</i>"]
+        SERV -->|"Query Replay Telemetry"| KA
+        SERV -->|"Return Step Telemetry JSON"| ORT
+    end
+
+    %% Node Fills & Text Colors
+    classDef offline fill:#e11d48,stroke:#9f1239,stroke-width:2px,color:#ffffff;
+    classDef aws fill:#0284c7,stroke:#075985,stroke-width:2px,color:#ffffff;
+    classDef storage fill:#059669,stroke:#065f46,stroke-width:2px,color:#ffffff;
+    classDef ui fill:#4f46e5,stroke:#312e81,stroke-width:2px,color:#ffffff;
+
+    class CSV,SIM,JSON offline;
+    class SEED,GW,SERV aws;
+    class KA storage;
+    class ORT ui;
 
     %% Subgraph Fills
-    style UI fill:#eef2ff,stroke:#6366f1,stroke-width:2px;
-    style AWS fill:#f0f9ff,stroke:#38bdf8,stroke-width:2px;
-    style STORAGE fill:#ecfdf5,stroke:#34d399,stroke-width:2px;
     style OFFLINE fill:#fff1f2,stroke:#fb7185,stroke-width:2px;
+    style SEEDING fill:#f0f9ff,stroke:#38bdf8,stroke-width:2px;
+    style SERVING fill:#eef2ff,stroke:#6366f1,stroke-width:2px;
 ```
 
 ---
