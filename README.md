@@ -32,7 +32,8 @@ A serverless, event-driven video recommendation system with a live UCB1 multi-ar
 
 ### Live Demo (real-time UCB1 pipeline)
 
-```flowchart TD
+```mermaid
+flowchart TD
     A["Next.js Dashboard<br/>(Live Demo Tab)"] -->|"GET /feed"| GW["AWS API Gateway<br/><code>*.execute-api.us-east-2.amazonaws.com</code>"]
     A -->|"POST /v1/events"| GW
 
@@ -59,7 +60,8 @@ A serverless, event-driven video recommendation system with a live UCB1 multi-ar
 
 ### Offline Model Replay (KuaiRand benchmark)
 
-```mermaidflowchart TD
+```mermaid
+flowchart TD
     subgraph OFFLINE["1. Local Pre-Processing & Feature Engineering"]
         CSV["KuaiRand-Pure Dataset<br/><i>(1M+ Short-Video Interaction Logs)</i>"] --> SIM["simulate_kuairand_stream.py<br/><i>(EMA Probability Shift Engine)</i>"]
         SIM --> JSON["data/kuairand_analytics_telemetry.json<br/><i>(Pre-Computed Replay Traces)</i>"]
