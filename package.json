@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "@heroicons/react": "^2.2.0",
-    "lucide-react": "^1.43.0",
-    "recharts": "^3.10.1"
-  }
-}

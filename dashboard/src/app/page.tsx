@@ -1,5 +1,7 @@
 'use client';
 
+import AnalyticsDashboard from './analytics/page';
+
 import React, { useState, useEffect, useRef } from 'react';
 import {
   HeartIcon,
@@ -13,17 +15,6 @@ import {
   ChevronDownIcon,
   VideoCameraIcon,
 } from '@heroicons/react/24/outline';
-import {
-  BarChart as ReBarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  CartesianGrid,
-} from 'recharts';
 
 // ---------- Types & Configuration ----------
 
@@ -97,10 +88,8 @@ function rankMediaItems(userFeats: UserFeatures, candidates: MediaItem[] = BASE_
       if (lastCategory) {
         if (isHateEvent) {
           if (cand.category === lastCategory) {
-            // Heavily penalize hated category
             affinityScore = -10.0 - 2.0 * Math.max(hates, 1);
           } else {
-            // Boost untried/different categories to immediately recommend alternatives
             affinityScore = 1.5 + 0.1 * likes + 0.05 * clicks;
           }
         } else {
@@ -128,15 +117,27 @@ function rankMediaItems(userFeats: UserFeatures, candidates: MediaItem[] = BASE_
 function queueUpcomingRecommendations(
   currentFeed: MediaItem[],
   currIdx: number,
-  rankedCandidates: MediaItem[]
+  rankedCandidates: MediaItem[],
+  lastInteractionType?: string
 ): MediaItem[] {
-  // History up to and including active item must remain completely untouched to avoid unmounting active video
   const viewedHistory = currentFeed.slice(0, currIdx + 1);
   const viewedIds = new Set(viewedHistory.map((item) => item.id));
 
-  // Queue highest ranked unviewed candidates right after currIdx
-  const unviewedRanked = rankedCandidates.filter((item) => !viewedIds.has(item.id));
+  let unviewedRanked = rankedCandidates.filter((item) => !viewedIds.has(item.id));
   const alreadyViewedRanked = rankedCandidates.filter((item) => viewedIds.has(item.id));
+
+  const activeItem = currentFeed[currIdx];
+
+  if (lastInteractionType === 'hate' && activeItem?.category && unviewedRanked.length > 0) {
+    const nonHatedIdx = unviewedRanked.findIndex(
+      (item) => item.category !== activeItem.category
+    );
+
+    if (nonHatedIdx !== -1) {
+      const [topPick] = unviewedRanked.splice(nonHatedIdx, 1);
+      unviewedRanked = [topPick, ...unviewedRanked];
+    }
+  }
 
   return [...viewedHistory, ...unviewedRanked, ...alreadyViewedRanked];
 }
@@ -163,7 +164,7 @@ type FeedResponse = {
   recommendations?: MediaItem[];
 } & UserFeatures;
 
-const PIPELINE_STAGES = ['Event', 'Queue', 'Feature Store', 'Model', 'Serve'] as const;
+const PIPELINE_STAGES = ['Event', 'Queue', 'Feature Store'] as const;
 type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 // ---------- Components ----------
@@ -196,7 +197,7 @@ function PillTabs({ active, onChange }: { active: 'demo' | 'behind'; onChange: (
               : 'text-zinc-400 hover:text-zinc-200'
           }`}
         >
-          {tab === 'demo' ? 'Live Demo' : 'Behind the Scenes'}
+          {tab === 'demo' ? 'Live Demo' : 'Offline Model Replay'}
         </button>
       ))}
     </div>
@@ -251,13 +252,6 @@ export default function PersonalizationDashboard() {
   const [imgError, setImgError] = useState(false);
   const [lastEvent, setLastEvent] = useState<{ type: string; item: string; status: number; error?: boolean } | null>(
     null
-  );
-  const [simulatedOps, setSimulatedOps] = useState(14280);
-  const [throughputHistory, setThroughputHistory] = useState<{ tick: string; ops: number }[]>(
-    Array.from({ length: 20 }, (_, i) => ({
-      tick: `T-${20 - i}`,
-      ops: Math.floor(400 + Math.random() * 200),
-    }))
   );
   const [pipelineActiveStage, setPipelineActiveStage] = useState<PipelineStage | null>(null);
 
@@ -333,34 +327,41 @@ export default function PersonalizationDashboard() {
       setData(payload);
       const fetched = payload.events || payload.features || payload || {};
 
-      // Guard against stale DynamoDB read overwriting fresh local interactions (e.g. hate events)
       const currentLocal = localFeaturesRef.current;
+      // Impressions/clicks still accumulate from backend + session (they feed the UCB1
+      // exploration/affinity scoring) but are no longer shown in the Feature Store Profile panel.
+      // The five displayed counters below always start at 0 on a fresh load or user switch —
+      // the panel only reflects this session's live interactions, never persisted backend counts.
       const updatedFeats: UserFeatures = {
         impressions_count: Math.max(fetched.impressions_count ?? 0, currentLocal.impressions_count ?? 0),
         clicks_count: Math.max(fetched.clicks_count ?? 0, currentLocal.clicks_count ?? 0),
-        long_views_count: Math.max(fetched.long_views_count ?? 0, currentLocal.long_views_count ?? 0),
-        likes_count: Math.max(fetched.likes_count ?? 0, currentLocal.likes_count ?? 0),
-        comments_count: Math.max(fetched.comments_count ?? 0, currentLocal.comments_count ?? 0),
-        shares_count: Math.max(fetched.shares_count ?? 0, currentLocal.shares_count ?? 0),
-        hates_count: Math.max(fetched.hates_count ?? 0, currentLocal.hates_count ?? 0),
+        long_views_count: resetQueue ? 0 : Math.max(fetched.long_views_count ?? 0, currentLocal.long_views_count ?? 0),
+        likes_count: resetQueue ? 0 : Math.max(fetched.likes_count ?? 0, currentLocal.likes_count ?? 0),
+        comments_count: resetQueue ? 0 : Math.max(fetched.comments_count ?? 0, currentLocal.comments_count ?? 0),
+        shares_count: resetQueue ? 0 : Math.max(fetched.shares_count ?? 0, currentLocal.shares_count ?? 0),
+        hates_count: resetQueue ? 0 : Math.max(fetched.hates_count ?? 0, currentLocal.hates_count ?? 0),
         total_watch_time_ms: Math.max(fetched.total_watch_time_ms ?? 0, currentLocal.total_watch_time_ms ?? 0),
-        last_interacted_item:
-          currentLocal.last_interacted_item && currentLocal.last_interacted_item !== 'None'
-            ? currentLocal.last_interacted_item
-            : (fetched.last_interacted_item || 'None'),
-        last_interacted_event:
-          currentLocal.last_interacted_event && currentLocal.last_interacted_event !== 'impression'
-            ? currentLocal.last_interacted_event
-            : (fetched.last_interacted_event || 'impression'),
-        last_interacted_category:
-          currentLocal.last_interacted_category && currentLocal.last_interacted_category !== 'None'
-            ? currentLocal.last_interacted_category
-            : (fetched.last_interacted_category || getCategoryForItemId(fetched.last_interacted_item) || 'None'),
+        // On a fresh load / user switch (resetQueue), these always start clean —
+        // no carrying over the previously-selected user's last item/event/category.
+        last_interacted_item: resetQueue
+          ? 'None'
+          : (currentLocal.last_interacted_item && currentLocal.last_interacted_item !== 'None'
+              ? currentLocal.last_interacted_item
+              : (fetched.last_interacted_item || 'None')),
+        last_interacted_event: resetQueue
+          ? 'impression'
+          : (currentLocal.last_interacted_event && currentLocal.last_interacted_event !== 'impression'
+              ? currentLocal.last_interacted_event
+              : (fetched.last_interacted_event || 'impression')),
+        last_interacted_category: resetQueue
+          ? 'None'
+          : (currentLocal.last_interacted_category && currentLocal.last_interacted_category !== 'None'
+              ? currentLocal.last_interacted_category
+              : (fetched.last_interacted_category || getCategoryForItemId(fetched.last_interacted_item) || 'None')),
       };
       setLocalFeatures(updatedFeats);
       localFeaturesRef.current = updatedFeats;
 
-      // Always re-rank using the latest consolidated user features to ensure dislike/hate penalties are preserved
       const ranked = rankMediaItems(updatedFeats, BASE_MEDIA);
 
       if (resetQueue) {
@@ -376,10 +377,9 @@ export default function PersonalizationDashboard() {
     }
   };
 
-  const triggerPipelinePulse = (stopAt: PipelineStage) => {
+  const triggerPipelinePulse = () => {
     if (pipelineTimerRef.current) clearTimeout(pipelineTimerRef.current);
     const stages: PipelineStage[] = ['Event', 'Queue', 'Feature Store'];
-    if (stopAt === 'Serve') stages.push('Model', 'Serve');
     let i = 0;
     const step = () => {
       setPipelineActiveStage(stages[i]);
@@ -393,16 +393,20 @@ export default function PersonalizationDashboard() {
     step();
   };
 
-  // Local feature tracker mapping KuaiRand interactions
   const updateLocalFeature = (eventType: string, itemId: string, extraMs = 0) => {
     const itemCat = getCategoryForItemId(itemId) || 'None';
+    
     setLocalFeatures((prev) => {
+      const isPassiveExit = (eventType === 'impression' || eventType === 'long_view') && prev.last_interacted_item === itemId;
+      const effectiveEvent = isPassiveExit && prev.last_interacted_event ? prev.last_interacted_event : eventType;
+
       const updated: UserFeatures = {
         ...prev,
         last_interacted_item: itemId,
-        last_interacted_event: eventType,
+        last_interacted_event: effectiveEvent,
         last_interacted_category: itemCat,
       };
+      
       if (eventType === 'impression') updated.impressions_count = (prev.impressions_count || 0) + 1;
       if (eventType === 'click') updated.clicks_count = (prev.clicks_count || 0) + 1;
       if (eventType === 'long_view') updated.long_views_count = (prev.long_views_count || 0) + 1;
@@ -411,6 +415,7 @@ export default function PersonalizationDashboard() {
       if (eventType === 'share') updated.shares_count = (prev.shares_count || 0) + 1;
       if (eventType === 'hate') updated.hates_count = (prev.hates_count || 0) + 1;
       if (extraMs > 0) updated.total_watch_time_ms = (prev.total_watch_time_ms || 0) + extraMs;
+      
       localFeaturesRef.current = updated;
       return updated;
     });
@@ -434,33 +439,29 @@ export default function PersonalizationDashboard() {
 
   const handleInteraction = async (eventType: string, itemId: string = currentItem.id, extraMs = 0) => {
     const formattedUserId = getFormattedUserId(selectedUserRaw);
-    const endpoint =
-      process.env.NEXT_PUBLIC_EVENTS_ENDPOINT || 'https://h0pe9irg1f.execute-api.us-east-2.amazonaws.com/v1/events';
+    const endpoint = process.env.NEXT_PUBLIC_EVENTS_ENDPOINT || 'https://h0pe9irg1f.execute-api.us-east-2.amazonaws.com/v1/events';
 
-    // 1. Immediately reflect metrics on the frontend
+    const currentLocal = localFeaturesRef.current;
+    const isPassiveExit = (eventType === 'impression' || eventType === 'long_view') && currentLocal.last_interacted_item === itemId;
+    const effectiveEvent = isPassiveExit && currentLocal.last_interacted_event ? currentLocal.last_interacted_event : eventType;
+
     updateLocalFeature(eventType, itemId, extraMs);
-    triggerPipelinePulse('Feature Store');
+    triggerPipelinePulse();
 
-    // 2. Pre-load the top recommendations starting at [currentIndex + 1] without modifying active video [currentIndex]
+    let nextFeed: MediaItem[] = [];
+
     setMediaFeed((prev) => {
       const itemCat = getCategoryForItemId(itemId) || 'None';
-      const currentLocal = localFeaturesRef.current;
-      const updatedFeats: UserFeatures = {
-        ...currentLocal,
-        last_interacted_item: itemId,
-        last_interacted_event: eventType,
-        last_interacted_category: itemCat,
-      };
-      if (eventType === 'like') updatedFeats.likes_count = (currentLocal.likes_count || 0) + 1;
-      if (eventType === 'click') updatedFeats.clicks_count = (currentLocal.clicks_count || 0) + 1;
-      if (eventType === 'share') updatedFeats.shares_count = (currentLocal.shares_count || 0) + 1;
-      if (eventType === 'comment') updatedFeats.comments_count = (currentLocal.comments_count || 0) + 1;
-      if (eventType === 'hate') updatedFeats.hates_count = (currentLocal.hates_count || 0) + 1;
-      if (eventType === 'impression') updatedFeats.impressions_count = (currentLocal.impressions_count || 0) + 1;
+      const updatedFeats = localFeaturesRef.current;
 
-      localFeaturesRef.current = updatedFeats;
-      const newlyRanked = rankMediaItems(updatedFeats, BASE_MEDIA);
-      return queueUpcomingRecommendations(prev, currentIndexRef.current, newlyRanked);
+      let candidatePool = BASE_MEDIA;
+      if (effectiveEvent === 'hate' && itemCat !== 'None') {
+        candidatePool = BASE_MEDIA.filter((m) => m.category !== itemCat);
+      }
+
+      const newlyRanked = rankMediaItems(updatedFeats, candidatePool);
+      nextFeed = queueUpcomingRecommendations(prev, currentIndexRef.current, newlyRanked, effectiveEvent);
+      return nextFeed;
     });
 
     try {
@@ -475,65 +476,41 @@ export default function PersonalizationDashboard() {
         }),
       });
       setLastEvent({ type: eventType, item: itemId, status: res.status, error: !res.ok });
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
-
-      // 3. Sync backend recommendations into the upcoming queue in the background
-      setTimeout(() => {
-        fetchUserProfile(selectedUserRaw, false);
-      }, 350);
     } catch (err) {
       console.error('Failed to dispatch event:', err);
       revertLocalFeature(eventType, extraMs);
     }
+
+    return nextFeed;
   };
 
   const navigateFeed = async (direction: 'next' | 'prev') => {
     const elapsedMs = Date.now() - watchStartRef.current;
-
-    // Process local and backend tracking sequentially for the video being exited
     const activeItem = currentItem;
-    await handleInteraction('impression', activeItem.id, elapsedMs);
-    if (elapsedMs > 5000) {
-      await handleInteraction('long_view', activeItem.id);
-    }
 
-    setImgError(false);
-    if (direction === 'next' && currentIndex < mediaFeed.length - 1) {
-      setCurrentIndex((p) => p + 1);
+    if (direction === 'next') {
+      setImgError(false);
+
+      const updatedFeed = await handleInteraction('impression', activeItem.id, elapsedMs);
+      if (elapsedMs > 5000) {
+        await handleInteraction('long_view', activeItem.id);
+      }
+
+      setCurrentIndex((p) => Math.min(p + 1, updatedFeed.length > 0 ? updatedFeed.length - 1 : mediaFeed.length - 1));
     } else if (direction === 'prev' && currentIndex > 0) {
+      setImgError(false);
       setCurrentIndex((p) => p - 1);
     }
+
     watchStartRef.current = Date.now();
   };
 
   useEffect(() => {
     fetchUserProfile(selectedUserRaw, true);
     watchStartRef.current = Date.now();
-
-    const opsInterval = setInterval(() => {
-      setSimulatedOps((prev) => prev + Math.floor(Math.random() * 8) + 1);
-      setThroughputHistory((prev) => [
-        ...prev.slice(1),
-        { tick: 'Live', ops: Math.floor(400 + Math.random() * 250) },
-      ]);
-    }, 1200);
-
-    return () => clearInterval(opsInterval);
   }, [selectedUserRaw]);
 
-  // Combined feature readouts (frontend local overlay primary, backend fallback)
   const feats = localFeatures;
-
-  // KuaiRand interaction metrics distribution for Recharts
-  const interactionDistribution = [
-    { label: 'Impr.', value: feats.impressions_count || 0 },
-    { label: 'Clicks', value: feats.clicks_count || 0 },
-    { label: 'Long View', value: feats.long_views_count || 0 },
-    { label: 'Likes', value: feats.likes_count || 0 },
-    { label: 'Comments', value: feats.comments_count || 0 },
-    { label: 'Shares', value: feats.shares_count || 0 },
-    { label: 'Hates', value: feats.hates_count || 0 },
-  ];
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-zinc-800">
@@ -552,8 +529,8 @@ export default function PersonalizationDashboard() {
           <PillTabs active={activeTab} onChange={setActiveTab} />
         </header>
 
-        {/* Status Toast */}
-        {lastEvent && (
+        {/* Status Toast — Live Demo only */}
+        {activeTab === 'demo' && lastEvent && (
           <div
             className={`flex items-center justify-between rounded-lg px-4 py-2.5 text-xs font-mono border transition-all ${
               lastEvent.error
@@ -737,125 +714,26 @@ export default function PersonalizationDashboard() {
                   </div>
                 </div>
 
-                <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl px-5 py-1 shadow-sm">
-                  <StatRow label="Last Active Item" value={feats.last_interacted_item || 'None'} />
-                  <StatRow
-                    label="Watch Duration"
-                    value={`${(((feats.total_watch_time_ms || 0)) / 1000).toFixed(1)}s`}
-                  />
-                  <StatRow label="Impressions" value={feats.impressions_count ?? 0} accent />
-                  <StatRow label="Clicks" value={feats.clicks_count ?? 0} />
-                  <StatRow label="Long Views" value={feats.long_views_count ?? 0} />
-                  <StatRow label="Likes" value={feats.likes_count ?? 0} />
-                  <StatRow label="Comments" value={feats.comments_count ?? 0} />
-                  <StatRow label="Shares" value={feats.shares_count ?? 0} />
-                  <StatRow label="Hates" value={feats.hates_count ?? 0} />
+                <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-4 space-y-1">
+                  <h4 className="text-xs font-mono font-semibold text-zinc-400 mb-3 uppercase tracking-wider">
+                    Feature Store Profile
+                  </h4>
+                  <StatRow label="Likes" value={feats.likes_count || 0} accent={true} />
+                  <StatRow label="Long Views (>5s)" value={feats.long_views_count || 0} />
+                  <StatRow label="Shares" value={feats.shares_count || 0} />
+                  <StatRow label="Comments" value={feats.comments_count || 0} />
+                  <StatRow label="Hates" value={feats.hates_count || 0} />
+                  <StatRow label="Last Category" value={feats.last_interacted_category || 'None'} />
+                  <StatRow label="Last Event" value={feats.last_interacted_event || 'None'} />
                 </div>
-                <p className="text-[11px] font-mono text-zinc-500 px-1">
-                  Reading real-time state from DynamoDB. Every feed event streams features back within milliseconds.
-                </p>
               </div>
             </section>
           </>
         ) : (
-          /* TAB 2: BEHIND THE SCENES WITH RECHARTS */
-          <section className="space-y-6">
-            <p className="text-xs text-zinc-400 max-w-lg font-mono">
-              Live telemetry and feature distribution aggregated across the KuaiRand interaction schema.
-            </p>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5">
-                <span className="text-[11px] font-mono text-zinc-400">Historical Interactions</span>
-                <div className="text-2xl font-mono font-bold text-zinc-100 mt-1">1,248,910</div>
-                <p className="text-[11px] text-zinc-500 mt-1">Aggregated in S3 parquet data lake</p>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5">
-                <span className="text-[11px] font-mono text-zinc-400">Model Affinity Score</span>
-                <div className="text-2xl font-mono font-bold text-cyan-400 mt-1">0.892</div>
-                <p className="text-[11px] text-zinc-500 mt-1">Vector proximity, active session</p>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5">
-                <span className="text-[11px] font-mono text-zinc-400">Serving Latency (p95)</span>
-                <div className="text-2xl font-mono font-bold text-emerald-400 mt-1">42ms</div>
-                <p className="text-[11px] text-zinc-500 mt-1">DynamoDB point read response time</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
-              
-              {/* Interaction Bar Chart */}
-              <div className="lg:col-span-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5 space-y-3">
-                <div className="flex items-baseline justify-between border-b border-zinc-800/60 pb-2">
-                  <h3 className="text-xs font-semibold text-zinc-200">Interaction Distribution</h3>
-                  <span className="text-[10.5px] font-mono text-zinc-500">KuaiRand Dataset Schema</span>
-                </div>
-                <div className="h-48 w-full pt-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ReBarChart data={interactionDistribution} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                      <XAxis dataKey="label" stroke="#71717a" fontSize={10} tickLine={false} />
-                      <YAxis stroke="#71717a" fontSize={10} tickLine={false} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', borderRadius: '6px', fontSize: '11px', fontFamily: 'monospace' }}
-                        cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }}
-                      />
-                      <Bar dataKey="value" fill="#22d3ee" radius={[3, 3, 0, 0]} />
-                    </ReBarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* Ingestion Throughput Line Chart */}
-              <div className="lg:col-span-2 bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5 flex flex-col justify-between space-y-3">
-                <div className="flex items-baseline justify-between border-b border-zinc-800/60 pb-2">
-                  <h3 className="text-xs font-semibold text-zinc-200">Ingestion Throughput</h3>
-                  <span className="text-[10.5px] font-mono text-cyan-400">
-                    {simulatedOps.toLocaleString()} ops
-                  </span>
-                </div>
-                <div className="h-48 w-full pt-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={throughputHistory} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="coolGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#22d3ee" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                      <XAxis dataKey="tick" stroke="#71717a" fontSize={10} tickLine={false} />
-                      <YAxis stroke="#71717a" fontSize={10} tickLine={false} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', borderRadius: '6px', fontSize: '11px', fontFamily: 'monospace' }}
-                      />
-                      <Area type="monotone" dataKey="ops" stroke="#22d3ee" strokeWidth={1.5} fillOpacity={1} fill="url(#coolGradient)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-            </div>
-
-            {/* Pipeline Cadence Footer */}
-            <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-zinc-200 mb-3">Pipeline Cadence</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 font-mono text-[11px]">
-                <div className="flex justify-between border-b border-zinc-800 pb-2 sm:border-b-0 sm:pb-0 sm:flex-col sm:gap-1">
-                  <span className="text-zinc-500">Ingestion</span>
-                  <span className="text-zinc-200">API Gateway → Lambda → SQS</span>
-                </div>
-                <div className="flex justify-between border-b border-zinc-800 pb-2 sm:border-b-0 sm:pb-0 sm:flex-col sm:gap-1">
-                  <span className="text-zinc-500">Retrain Schedule</span>
-                  <span className="text-zinc-200">EventBridge Cron, Nightly</span>
-                </div>
-                <div className="flex justify-between sm:flex-col sm:gap-1">
-                  <span className="text-zinc-500">Model Store</span>
-                  <span className="text-zinc-200">Versioned in S3</span>
-                </div>
-              </div>
-            </div>
-          </section>
+          /* TAB 2: ANALYTICS DASHBOARD */
+          <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-5 shadow-sm">
+            <AnalyticsDashboard />
+          </div>
         )}
 
       </div>

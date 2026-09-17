@@ -2,6 +2,13 @@
 resource "aws_apigatewayv2_api" "http_api" {
   name          = "recommendation-engine-api"
   protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_origins = ["*"] # Or replace with "http://localhost:3000" for strict security
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_headers = ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Amz-Security-Token"]
+    max_age       = 300
+  }
 }
 
 resource "aws_apigatewayv2_stage" "default_stage" {

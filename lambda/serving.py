@@ -179,6 +179,48 @@ def lambda_handler(event, context):
 
         # 3. Route Batch Stream View / Analytics (/analytics or type=kuairand)
         if '/analytics' in path or query_params.get('type') == 'kuairand':
+            user_id = query_params.get('user_id')
+            action = query_params.get('action')
+
+            # 3A. List available user_ids for analytics dashboard buttons
+            if action == 'list_users':
+                res = kuairand_table.scan(ProjectionExpression="user_id")
+                users = sorted([item["user_id"] for item in res.get("Items", [])])
+                return {
+                    "statusCode": 200,
+                    "headers": CORS_HEADERS,
+                    "body": json.dumps(users)
+                }
+
+            # 3B. Fetch full telemetry payload for a specific user
+            if user_id:
+                # Import KeyConditionExpression helper at top of file: from boto3.dynamodb.conditions import Key
+                from boto3.dynamodb.conditions import Key
+
+                res = kuairand_table.query(
+                    KeyConditionExpression=Key("user_id").eq(str(user_id))
+                )
+                items = res.get("Items", [])
+                
+                if not items:
+                    return {
+                        "statusCode": 404,
+                        "headers": CORS_HEADERS,
+                        "body": json.dumps({"error": f"Telemetry for user '{user_id}' not found"})
+                    }
+
+                # seed.py writes one aggregated summary row per user (video_id == "AGGREGATED_SUMMARY")
+                # containing total_interactions/dominant_category/category_probability_shift/etc.
+                # Return it directly instead of re-nesting it under "recent_events".
+                aggregated = next((i for i in items if i.get("video_id") == "AGGREGATED_SUMMARY"), items[0])
+
+                return {
+                    "statusCode": 200,
+                    "headers": CORS_HEADERS,
+                    "body": json.dumps(aggregated, cls=DecimalEncoder)
+                }
+
+            # 3C. Fallback: Batch Stream Scan for live ingestion pipeline
             response = kuairand_table.scan(Limit=50)
             raw_items = response.get('Items', [])
             
