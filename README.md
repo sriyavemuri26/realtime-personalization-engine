@@ -63,7 +63,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph OFFLINE["1. Local Pre-Processing & Feature Engineering"]
-        CSV["KuaiRand-Pure Dataset<br/><i>(1M+ Short-Video Interaction Logs)</i>"] --> SIM["simulate_kuairand_stream.py<br/><i>(EMA Probability Shift Engine)</i>"]
+        CSV["KuaiRand-Pure Dataset<br/><i>(Real Short-Video Interaction Logs)</i>"] --> SIM["simulate_kuairand_stream.py<br/><i>(EMA Probability Shift Engine)</i>"]
         SIM --> JSON["data/kuairand_analytics_telemetry.json<br/><i>(Pre-Computed Replay Traces)</i>"]
     end
 
